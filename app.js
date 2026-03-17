@@ -4,9 +4,12 @@
 
 'use strict';
 
+// ── API Config ───────────────────────────────────────────────
+const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
+    ? 'http://localhost:8000' 
+    : 'https://focus-tracker-backend-seven.vercel.app';
+
 // ── Constants ───────────────────────────────────────────────
-const STORAGE_KEY = 'focustracker_sessions';
-const SETTINGS_KEY = 'focustracker_settings';
 const DEFAULT_REMINDER = 40;  // minutes
 const TOAST_DURATION = 8000; // ms
 
@@ -15,6 +18,7 @@ let timerInterval = null;
 let reminderTimeout = null;
 let activeSession = null;   // { taskName, startTime }
 let audioCtx = null;
+let settingsCache = {};     // In-memory settings cache
 
 // ── DOM refs ─────────────────────────────────────────────────
 const taskInput = document.getElementById('task-input');
@@ -74,41 +78,68 @@ function formatDateLabel(d) {
     return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
-// ── Settings helpers ──────────────────────────────────────────
-function loadSettings() {
+// ── API Helpers ───────────────────────────────────────────────
+async function apiFetch(path, options = {}) {
     try {
-        return JSON.parse(localStorage.getItem(SETTINGS_KEY)) ?? {};
-    } catch { return {}; }
+        const res = await fetch(`${API_BASE}${path}`, {
+            headers: { 'Content-Type': 'application/json' },
+            ...options,
+        });
+        if (!res.ok) {
+            console.error(`API error ${res.status} on ${path}:`, await res.text());
+            return null;
+        }
+        if (res.status === 204) return null;
+        return await res.json();
+    } catch (err) {
+        console.error(`Network error on ${path}:`, err);
+        return null;
+    }
 }
 
+// ── Settings helpers ──────────────────────────────────────────
+/** Load settings from backend and populate in-memory cache. */
+async function fetchSettings() {
+    const data = await apiFetch('/settings');
+    if (data) settingsCache = data;
+    return settingsCache;
+}
+
+/** Save one or more settings to backend (fire-and-forget). */
 function saveSettings(patch) {
-    const s = { ...loadSettings(), ...patch };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
-    return s;
+    settingsCache = { ...settingsCache, ...patch };
+    // Stringify all values (backend stores as strings)
+    const stringified = Object.fromEntries(
+        Object.entries(patch).map(([k, v]) => [k, String(v)])
+    );
+    apiFetch('/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ settings: stringified }),
+    });
+    return settingsCache;
 }
 
 function getReminderMins() {
-    return Math.max(1, parseInt(loadSettings().reminderMins ?? DEFAULT_REMINDER, 10));
+    return Math.max(1, parseInt(settingsCache.reminderMins ?? DEFAULT_REMINDER, 10));
 }
 
 function getTheme() {
-    return loadSettings().theme ?? 'light';
+    return settingsCache.theme ?? 'light';
 }
 
-// ── Storage ───────────────────────────────────────────────────
-function loadSessions() {
-    try {
-        return JSON.parse(localStorage.getItem(STORAGE_KEY)) ?? [];
-    } catch { return []; }
+// ── Sessions ───────────────────────────────────────────────────
+/** Fetch today's sessions from the backend. */
+async function todaySessions() {
+    const data = await apiFetch(`/sessions?date=${todayKey()}`);
+    return data ?? [];
 }
 
-function saveSessions(sessions) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sessions));
-}
-
-function todaySessions() {
-    const key = todayKey();
-    return loadSessions().filter(s => s.date === key);
+/** POST a completed session to the backend. */
+async function postSession(session) {
+    return apiFetch('/sessions', {
+        method: 'POST',
+        body: JSON.stringify(session),
+    });
 }
 
 // ── Audio: tone presets ───────────────────────────────────────
@@ -144,7 +175,6 @@ const TONE_PRESETS = {
         icon: '🪗',
         desc: 'Single deep resonant bell',
         play(ctx, now) {
-            // Deep bell: fundamental + 2nd harmonic layer
             [[330, 1.0], [660, 0.4], [990, 0.15]].forEach(([freq, vol]) => {
                 const osc = ctx.createOscillator(), g = ctx.createGain();
                 osc.connect(g); g.connect(ctx.destination);
@@ -210,7 +240,7 @@ const TONE_PRESETS = {
 const DEFAULT_TONE = 'chime';
 
 function getToneId() {
-    return loadSettings().toneId ?? DEFAULT_TONE;
+    return settingsCache.toneId ?? DEFAULT_TONE;
 }
 
 function playReminderTone() {
@@ -310,7 +340,7 @@ function startSession() {
 }
 
 // ── Stop session ──────────────────────────────────────────────
-function stopSession() {
+async function stopSession() {
     if (!activeSession) return;
 
     clearInterval(timerInterval);
@@ -321,17 +351,15 @@ function stopSession() {
     const endTime = Date.now();
     const duration = endTime - activeSession.startTime;
 
-    // Save session
-    const sessions = loadSessions();
-    sessions.push({
+    // Save session to backend
+    await postSession({
         id: crypto.randomUUID(),
         date: todayKey(),
-        taskName: activeSession.taskName,
-        startTime: activeSession.startTime,
-        endTime,
+        task_name: activeSession.taskName,
+        start_time: activeSession.startTime,
+        end_time: endTime,
         duration,
     });
-    saveSessions(sessions);
 
     // Reset state
     activeSession = null;
@@ -346,7 +374,7 @@ function stopSession() {
     clockLabel.textContent = 'ready';
     sessionBanner.classList.remove('visible');
 
-    // Refresh dashboard in background
+    // Refresh dashboard
     renderDashboard();
 
     // Show completion toast
@@ -354,8 +382,8 @@ function stopSession() {
 }
 
 // ── Dashboard ─────────────────────────────────────────────────
-function renderDashboard() {
-    const sessions = todaySessions();
+async function renderDashboard() {
+    const sessions = await todaySessions();
     const totalMs = sessions.reduce((acc, s) => acc + s.duration, 0);
 
     totalTimeEl.textContent = sessions.length === 0 ? '0m' : formatTotalTime(totalMs);
@@ -381,8 +409,8 @@ function renderDashboard() {
         item.className = 'session-item';
         item.innerHTML = `
       <div>
-        <div class="session-task">${escHtml(s.taskName)}</div>
-        <div class="session-time-range">${formatTime(s.startTime)} → ${formatTime(s.endTime)}</div>
+        <div class="session-task">${escHtml(s.task_name)}</div>
+        <div class="session-time-range">${formatTime(s.start_time)} → ${formatTime(s.end_time)}</div>
       </div>
       <div class="session-duration">${formatDuration(s.duration)}</div>
     `;
@@ -408,11 +436,11 @@ function applyTheme(theme) {
 // ── Settings panel ────────────────────────────────────────────
 function initSettings() {
     const reminderInput = document.getElementById('reminder-input');
-    const btnSave       = document.getElementById('btn-save-reminder');
-    const savedMsg      = document.getElementById('reminder-saved-msg');
-    const previewText   = document.getElementById('reminder-preview-text');
-    const hintMins      = document.getElementById('hint-reminder-mins');
-    const toneGrid      = document.getElementById('tone-grid');
+    const btnSave = document.getElementById('btn-save-reminder');
+    const savedMsg = document.getElementById('reminder-saved-msg');
+    const previewText = document.getElementById('reminder-preview-text');
+    const hintMins = document.getElementById('hint-reminder-mins');
+    const toneGrid = document.getElementById('tone-grid');
 
     // ── Reminder interval ──────────────────────────────────────
     const current = getReminderMins();
@@ -422,7 +450,7 @@ function initSettings() {
 
     function updatePreview(mins) {
         if (previewText) previewText.textContent = `Reminder fires at ${mins} min into each session`;
-        if (hintMins)    hintMins.textContent = mins;
+        if (hintMins) hintMins.textContent = mins;
     }
 
     if (reminderInput) {
@@ -517,8 +545,9 @@ function initTabs() {
 }
 
 // ── Init ──────────────────────────────────────────────────────
-function init() {
-    // Apply saved theme on load
+async function init() {
+    // Load settings from backend first, then apply theme
+    await fetchSettings();
     applyTheme(getTheme());
 
     // Date label
@@ -555,4 +584,3 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
-
