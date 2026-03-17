@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Focus Hour Tracker</title>
+  <meta name="description"
+    content="A lightweight app to track your deep-work focus sessions, measure daily productive time, and review your performance." />
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- Custom design system -->
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+
+  <!-- Toast overlay -->
+  <div id="toast-container" aria-live="polite"></div>
+
+  <div id="app">
+
+    <!-- ── Header ─────────────────────────────────────────── -->
+    <header class="app-header">
+      <!-- Spacer left -->
+      <div style="width:40px; flex-shrink:0;"></div>
+
+      <div class="app-header-center">
+        <div class="app-logo">
+          <div class="logo-icon">🎯</div>
+          <h1 class="app-title">FocusTracker</h1>
+        </div>
+        <p class="app-subtitle">Track your deep-work sessions. Stay in flow.</p>
+      </div>
+
+      <!-- Theme toggle -->
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle dark mode" title="Toggle dark mode">
+        🌙
+      </button>
+    </header>
+
+    <!-- ── Tab Navigation ────────────────────────────────── -->
+    <nav class="tab-nav" role="tablist">
+      <button class="tab-btn active" role="tab" data-tab="view-timer" aria-selected="true" id="tab-timer">
+        <span>⏱</span> Timer
+      </button>
+      <button class="tab-btn" role="tab" data-tab="view-dashboard" aria-selected="false" id="tab-dashboard">
+        <span>📊</span> Dashboard
+      </button>
+      <button class="tab-btn" role="tab" data-tab="view-settings" aria-selected="false" id="tab-settings">
+        <span>⚙️</span> Settings
+      </button>
+    </nav>
+
+    <!-- ══════════════════════════════════════════════════════
+         TIMER VIEW
+    ══════════════════════════════════════════════════════ -->
+    <div id="view-timer" class="tab-view" role="tabpanel" aria-labelledby="tab-timer">
+
+      <div class="card">
+
+        <!-- Task input -->
+        <div class="task-input-wrap">
+          <label class="task-input-label" for="task-input">What are you working on?</label>
+          <input type="text" id="task-input" class="task-input" placeholder="e.g. Write chapter 3 of the report…"
+            maxlength="120" autocomplete="off" spellcheck="false" />
+        </div>
+
+        <!-- Clock -->
+        <div class="clock-wrap">
+          <div id="clock" class="clock-digits" aria-label="Elapsed time">00:00:00</div>
+          <div id="clock-label" class="clock-label">ready</div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+          <button class="btn btn-start" id="btn-start" aria-label="Start focus session">
+            ▶ Start
+          </button>
+          <button class="btn btn-stop" id="btn-stop" aria-label="Stop focus session" disabled>
+            ■ Stop
+          </button>
+        </div>
+
+        <!-- Active session banner -->
+        <div class="session-banner" id="session-banner" aria-live="polite">
+          <span class="banner-dot"></span>
+          <span class="banner-task" id="banner-task"></span>
+          <span class="banner-hint">Session active</span>
+        </div>
+
+      </div>
+
+      <!-- Hint card -->
+      <div class="card" style="padding: 18px 24px;">
+        <div style="display:flex; gap:14px; align-items:flex-start;">
+          <span style="font-size:1.4rem; flex-shrink:0;">💡</span>
+          <div>
+            <p style="font-size:0.875rem; color: var(--text-secondary); line-height:1.6;">
+              A gentle reminder will nudge you at <strong style="color:var(--accent-1)"
+                id="hint-reminder-mins">40</strong> minutes — the sweet spot for a focus block. Your timer keeps running
+              until you hit <strong>Stop</strong>.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <!-- /TIMER VIEW -->
+
+
+    <!-- ══════════════════════════════════════════════════════
+         DASHBOARD VIEW
+    ══════════════════════════════════════════════════════ -->
+    <div id="view-dashboard" class="tab-view" role="tabpanel" aria-labelledby="tab-dashboard" hidden>
+
+      <!-- Date chip -->
+      <div>
+        <span class="date-chip">
+          <span>📅</span>
+          <span id="date-label"></span>
+        </span>
+      </div>
+
+      <!-- Stats grid -->
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Total Focus Time</div>
+          <div class="stat-value" id="total-time">0m</div>
+          <div class="stat-sub">today</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Sessions Completed</div>
+          <div class="stat-value" id="total-sessions">0</div>
+          <div class="stat-sub">today</div>
+        </div>
+      </div>
+
+      <!-- Session history -->
+      <div class="card">
+        <div class="section-header">
+          <span class="section-title">Session History</span>
+          <span class="session-count-badge" id="session-count-badge"></span>
+        </div>
+        <div class="session-list" id="session-list">
+          <!-- Populated by JS -->
+        </div>
+      </div>
+
+    </div>
+    <!-- /DASHBOARD VIEW -->
+
+
+    <!-- ══════════════════════════════════════════════════════
+         SETTINGS VIEW
+    ══════════════════════════════════════════════════════ -->
+    <div id="view-settings" class="tab-view" role="tabpanel" aria-labelledby="tab-settings" hidden>
+
+      <!-- Reminder duration -->
+      <div class="card">
+        <div class="settings-section">
+          <label class="settings-label" for="reminder-input">⏰ Reminder Interval</label>
+          <p class="settings-description">
+            Set how many minutes into a session you'd like a gentle nudge. The timer keeps running — this is just a
+            check-in.
+          </p>
+          <div class="reminder-input-row">
+            <input type="number" id="reminder-input" class="reminder-number-input" min="1" max="240" step="1" value="40"
+              aria-label="Reminder interval in minutes" />
+            <span class="reminder-unit">minutes</span>
+            <button class="btn btn-start btn-save-settings" id="btn-save-reminder">Save</button>
+            <span class="settings-saved-msg" id="reminder-saved-msg">✓ Saved!</span>
+          </div>
+          <div class="reminder-preview" id="reminder-preview">
+            <span>🔔</span>
+            <span id="reminder-preview-text">Reminder fires at 40 min into each session</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Theme -->
+      <div class="card">
+        <div class="settings-section">
+          <label class="settings-label">🎵 Reminder Tone</label>
+          <p class="settings-description">Choose the sound that plays when your reminder fires. Click a card to select it — it'll preview automatically.</p>
+          <!-- Cards populated by JS from TONE_PRESETS -->
+          <div class="tone-grid" id="tone-grid"></div>
+        </div>
+      </div>
+
+      <!-- Appearance -->
+      <div class="card">
+        <div class="settings-section">
+          <label class="settings-label">🎨 Appearance</label>
+          <p class="settings-description">Choose your preferred colour scheme.</p>
+          <div class="theme-option-row">
+            <button class="theme-pill-btn active" id="theme-pill-light" data-theme-val="light">
+              ☀️ Light
+            </button>
+            <button class="theme-pill-btn" id="theme-pill-dark" data-theme-val="dark">
+              🌙 Dark
+            </button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <!-- /SETTINGS VIEW -->
+
+  </div><!-- /#app -->
+
+  <script src="app.js"></script>
+</body>
+
+</html>
