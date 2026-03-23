@@ -5,13 +5,14 @@
 'use strict';
 
 // ── API Config ───────────────────────────────────────────────
-const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
-    ? 'http://localhost:8000' 
+const API_BASE = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:8000'
     : 'https://focus-tracker-backend-seven.vercel.app';
 
 // ── Constants ───────────────────────────────────────────────
 const DEFAULT_REMINDER = 40;  // minutes
 const TOAST_DURATION = 8000; // ms
+const TOKEN_KEY = 'ft_token';
 
 // ── State ────────────────────────────────────────────────────
 let timerInterval = null;
@@ -19,6 +20,7 @@ let reminderTimeout = null;
 let activeSession = null;   // { taskName, startTime }
 let audioCtx = null;
 let settingsCache = {};     // In-memory settings cache
+let currentUser = null;     // { id, email, name, picture }
 
 // ── DOM refs ─────────────────────────────────────────────────
 const taskInput = document.getElementById('task-input');
@@ -35,6 +37,15 @@ const totalTimeEl = document.getElementById('total-time');
 const totalSessionEl = document.getElementById('total-sessions');
 const sessionList = document.getElementById('session-list');
 const dateLabelEl = document.getElementById('date-label');
+
+// Auth
+const loginScreen = document.getElementById('login-screen');
+const appEl = document.getElementById('app');
+const btnGoogleLogin = document.getElementById('btn-google-login');
+const userChip = document.getElementById('user-chip');
+const userAvatar = document.getElementById('user-avatar');
+const userNameEl = document.getElementById('user-name');
+const btnLogout = document.getElementById('btn-logout');
 
 // ── Utility: Formatting ───────────────────────────────────────
 function pad(n) { return String(n).padStart(2, '0'); }
@@ -78,13 +89,52 @@ function formatDateLabel(d) {
     return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 }
 
+// ── Auth helpers ──────────────────────────────────────────────
+function getToken() { return localStorage.getItem(TOKEN_KEY); }
+function setToken(t) { localStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+
+function showLoginScreen() {
+    loginScreen.hidden = false;
+    appEl.hidden = true;
+}
+
+function showApp(user) {
+    currentUser = user;
+    loginScreen.hidden = true;
+    appEl.hidden = false;
+
+    // Populate user chip
+    if (user.picture) {
+        userAvatar.src = user.picture;
+        userAvatar.hidden = false;
+    } else {
+        userAvatar.hidden = true;
+    }
+    userNameEl.textContent = user.name.split(' ')[0]; // first name only
+    userChip.hidden = false;
+}
+
+function logout() {
+    clearToken();
+    currentUser = null;
+    userChip.hidden = true;
+    showLoginScreen();
+}
+
 // ── API Helpers ───────────────────────────────────────────────
 async function apiFetch(path, options = {}) {
+    const token = getToken();
+    const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
     try {
-        const res = await fetch(`${API_BASE}${path}`, {
-            headers: { 'Content-Type': 'application/json' },
-            ...options,
-        });
+        const res = await fetch(`${API_BASE}${path}`, { ...options, headers });
+        if (res.status === 401) {
+            // Token invalid/expired — send back to login
+            logout();
+            return null;
+        }
         if (!res.ok) {
             console.error(`API error ${res.status} on ${path}:`, await res.text());
             return null;
@@ -98,17 +148,14 @@ async function apiFetch(path, options = {}) {
 }
 
 // ── Settings helpers ──────────────────────────────────────────
-/** Load settings from backend and populate in-memory cache. */
 async function fetchSettings() {
     const data = await apiFetch('/settings');
     if (data) settingsCache = data;
     return settingsCache;
 }
 
-/** Save one or more settings to backend (fire-and-forget). */
 function saveSettings(patch) {
     settingsCache = { ...settingsCache, ...patch };
-    // Stringify all values (backend stores as strings)
     const stringified = Object.fromEntries(
         Object.entries(patch).map(([k, v]) => [k, String(v)])
     );
@@ -128,13 +175,11 @@ function getTheme() {
 }
 
 // ── Sessions ───────────────────────────────────────────────────
-/** Fetch today's sessions from the backend. */
 async function todaySessions() {
     const data = await apiFetch(`/sessions?date=${todayKey()}`);
     return data ?? [];
 }
 
-/** POST a completed session to the backend. */
 async function postSession(session) {
     return apiFetch('/sessions', {
         method: 'POST',
@@ -149,10 +194,6 @@ function ensureAudioCtx() {
     return audioCtx;
 }
 
-/**
- * Each preset is a function(ctx, now) that schedules Web Audio nodes.
- * Add new presets here — they auto-appear in the Settings selector.
- */
 const TONE_PRESETS = {
     chime: {
         label: 'Chime',
@@ -254,7 +295,6 @@ function playReminderTone() {
     }
 }
 
-/** Preview a specific tone by id (used from Settings) */
 function previewTone(id) {
     try {
         ensureAudioCtx();
@@ -309,12 +349,10 @@ function startSession() {
         return;
     }
 
-    // Unlock AudioContext on first user gesture
     ensureAudioCtx();
 
     activeSession = { taskName, startTime: Date.now() };
 
-    // UI updates
     taskInput.disabled = true;
     btnStart.disabled = true;
     btnStop.disabled = false;
@@ -323,11 +361,9 @@ function startSession() {
     sessionBanner.classList.add('visible');
     bannerTask.textContent = taskName;
 
-    // Tick every second
     timerInterval = setInterval(tick, 1000);
     tick();
 
-    // Reminder (uses saved interval)
     const mins = getReminderMins();
     reminderTimeout = setTimeout(() => {
         playReminderTone();
@@ -351,7 +387,6 @@ async function stopSession() {
     const endTime = Date.now();
     const duration = endTime - activeSession.startTime;
 
-    // Save session to backend
     await postSession({
         id: crypto.randomUUID(),
         date: todayKey(),
@@ -361,10 +396,8 @@ async function stopSession() {
         duration,
     });
 
-    // Reset state
     activeSession = null;
 
-    // Reset UI
     taskInput.disabled = false;
     taskInput.value = '';
     btnStart.disabled = false;
@@ -374,10 +407,7 @@ async function stopSession() {
     clockLabel.textContent = 'ready';
     sessionBanner.classList.remove('visible');
 
-    // Refresh dashboard
     renderDashboard();
-
-    // Show completion toast
     showToast('Session Complete!', `Great work! Session saved. 🎉`, '✅');
 }
 
@@ -392,7 +422,6 @@ async function renderDashboard() {
     const badge = document.getElementById('session-count-badge');
     if (badge) badge.textContent = sessions.length > 0 ? `${sessions.length} session${sessions.length !== 1 ? 's' : ''}` : '';
 
-    // Session list
     if (sessions.length === 0) {
         sessionList.innerHTML = `
       <div class="empty-state">
@@ -403,7 +432,6 @@ async function renderDashboard() {
     }
 
     sessionList.innerHTML = '';
-    // Most recent first
     [...sessions].reverse().forEach(s => {
         const item = document.createElement('div');
         item.className = 'session-item';
@@ -427,7 +455,6 @@ function applyTheme(theme) {
     document.documentElement.setAttribute('data-theme', theme === 'dark' ? 'dark' : '');
     const toggle = document.getElementById('theme-toggle');
     if (toggle) toggle.textContent = theme === 'dark' ? '☀️' : '🌙';
-    // Sync pill buttons in settings
     document.querySelectorAll('.theme-pill-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.themeVal === theme);
     });
@@ -442,7 +469,6 @@ function initSettings() {
     const hintMins = document.getElementById('hint-reminder-mins');
     const toneGrid = document.getElementById('tone-grid');
 
-    // ── Reminder interval ──────────────────────────────────────
     const current = getReminderMins();
     if (reminderInput) reminderInput.value = current;
     updatePreview(current);
@@ -473,11 +499,8 @@ function initSettings() {
         });
     }
 
-    // ── Tone selector ──────────────────────────────────────────
     if (toneGrid) {
         const savedTone = getToneId();
-
-        // Build cards from TONE_PRESETS
         Object.entries(TONE_PRESETS).forEach(([id, preset]) => {
             const card = document.createElement('div');
             card.className = 'tone-card' + (id === savedTone ? ' active' : '');
@@ -491,31 +514,24 @@ function initSettings() {
             toneGrid.appendChild(card);
         });
 
-        // Select tone on card click (but not the preview button)
         toneGrid.addEventListener('click', e => {
             const btn = e.target.closest('.tone-preview-btn');
             const card = e.target.closest('.tone-card');
-
             if (btn) {
-                // Preview button — play without selecting
                 e.stopPropagation();
                 previewTone(btn.dataset.toneId);
                 return;
             }
-
             if (card) {
                 const id = card.dataset.toneId;
-                // Mark active
                 toneGrid.querySelectorAll('.tone-card').forEach(c => c.classList.remove('active'));
                 card.classList.add('active');
-                // Save + preview
                 saveSettings({ toneId: id });
                 previewTone(id);
             }
         });
     }
 
-    // ── Theme pill buttons ─────────────────────────────────────
     document.querySelectorAll('.theme-pill-btn').forEach(btn => {
         btn.addEventListener('click', () => {
             const theme = btn.dataset.themeVal;
@@ -546,41 +562,59 @@ function initTabs() {
 
 // ── Init ──────────────────────────────────────────────────────
 async function init() {
-    // Load settings from backend first, then apply theme
-    await fetchSettings();
-    applyTheme(getTheme());
-
-    // Date label
-    dateLabelEl.textContent = formatDateLabel(new Date());
-
-    // Bind controls
-    btnStart.addEventListener('click', startSession);
-    btnStop.addEventListener('click', stopSession);
-    btnStop.disabled = true;
-
-    // Theme toggle button (header)
-    const themeToggleBtn = document.getElementById('theme-toggle');
-    if (themeToggleBtn) {
-        themeToggleBtn.addEventListener('click', () => {
-            const next = getTheme() === 'dark' ? 'light' : 'dark';
-            saveSettings({ theme: next });
-            applyTheme(next);
-        });
+    // 1. Check for token in URL (coming back from OAuth callback)
+    const urlParams = new URLSearchParams(window.location.search);
+    const tokenFromUrl = urlParams.get('token');
+    if (tokenFromUrl) {
+        setToken(tokenFromUrl);
+        // Clean the URL
+        window.history.replaceState({}, document.title, window.location.pathname);
     }
 
-    // Enter key in task input
-    taskInput.addEventListener('keydown', e => {
-        if (e.key === 'Enter' && !btnStart.disabled) startSession();
+    // 2. Try to load user from stored token
+    const token = getToken();
+    if (token) {
+        const user = await apiFetch('/auth/me');
+        if (user) {
+            // Authenticated — boot the app
+            showApp(user);
+            await fetchSettings();
+            applyTheme(getTheme());
+            dateLabelEl.textContent = formatDateLabel(new Date());
+
+            btnStart.addEventListener('click', startSession);
+            btnStop.addEventListener('click', stopSession);
+            btnStop.disabled = true;
+
+            const themeToggleBtn = document.getElementById('theme-toggle');
+            if (themeToggleBtn) {
+                themeToggleBtn.addEventListener('click', () => {
+                    const next = getTheme() === 'dark' ? 'light' : 'dark';
+                    saveSettings({ theme: next });
+                    applyTheme(next);
+                });
+            }
+
+            taskInput.addEventListener('keydown', e => {
+                if (e.key === 'Enter' && !btnStart.disabled) startSession();
+            });
+
+            initSettings();
+            initTabs();
+            renderDashboard();
+            return;
+        }
+    }
+
+    // 3. Not authenticated — show login
+    showLoginScreen();
+    btnGoogleLogin.addEventListener('click', () => {
+        window.location.href = `${API_BASE}/auth/google/login`;
     });
-
-    // Settings panel
-    initSettings();
-
-    // Tabs
-    initTabs();
-
-    // Initial render
-    renderDashboard();
+    btnLogout.addEventListener('click', logout);
 }
+
+// Bind logout (always, regardless of auth state)
+btnLogout.addEventListener('click', logout);
 
 document.addEventListener('DOMContentLoaded', init);
